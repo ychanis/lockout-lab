@@ -23,3 +23,36 @@ assert.equal(t[4].failures,1);
 for(const args of [[0,30],[21,30],[1.5,30],[5,0],[5,301],[5,NaN],[Infinity,30]])assert.throws(()=>LockoutEngine.validate(...args));
 assert.equal(Object.values(RESEARCH_DATA).reduce((sum,groups)=>sum+groups.reduce((n,r)=>n+r.length,0),0),48533);
 console.log(JSON.stringify({status:'PASS',paperReproduced:report,pairedStreams:90,requests:48533,boundaryChecks:'PASS',invalidInputs:'PASS'},null,2));
+
+
+// v2 comparisons and isolated browser-storage fault tests.
+vm.runInThisContext(fs.readFileSync(path.join(root,'storage.js'),'utf8'));
+const config={scenario:'fast',a:{threshold:5,seconds:30},b:{threshold:5,seconds:10}};
+const a=LockoutEngine.aggregate(RESEARCH_DATA.fast,5,30),b=LockoutEngine.aggregate(RESEARCH_DATA.fast,5,10);
+assert.notEqual(a.normalBlocked,b.normalBlocked);
+assert.deepEqual(PolicyStorage.validateSummary(a),PolicyStorage.validateSummary(LockoutEngine.aggregate(RESEARCH_DATA.fast,5,30)));
+let raw=null;const memory={getItem:()=>raw,setItem:(key,value)=>{raw=value;}};
+const store=PolicyStorage.create(()=>memory);
+assert.deepEqual(store.read(),[]);
+const record=store.add('테스트 비교',config,{a,b});
+assert.equal(store.read()[0].name,'테스트 비교');
+assert.deepEqual(store.read()[0].config,config);
+assert.equal(store.read()[0].results.a.normalBlocked,a.normalBlocked);
+const reopened=PolicyStorage.create(()=>memory);assert.equal(reopened.read()[0].id,record.id);
+const preserved=raw;
+assert.throws(()=>store.add('',config,{a,b}));assert.equal(raw,preserved);
+assert.throws(()=>store.add('x',{...config,a:{threshold:0,seconds:30}},{a,b}));assert.equal(raw,preserved);
+reopened.remove(record.id);assert.equal(store.read().length,0);
+for(let i=0;i<20;i++)store.add('기록 '+i,config,{a,b});
+const full=raw;assert.throws(()=>store.add('초과',config,{a,b}));assert.equal(raw,full);
+raw='{broken';assert.throws(()=>store.read());assert.throws(()=>store.add('새 비교',config,{a,b}));assert.equal(raw,'{broken');
+raw=JSON.stringify({version:99,items:[]});assert.throws(()=>store.read());
+raw=preserved;
+const quota=PolicyStorage.create(()=>({getItem:()=>raw,setItem:()=>{throw new Error('QuotaExceeded');}}));
+assert.throws(()=>quota.add('용량 오류',config,{a,b}));assert.equal(raw,preserved);
+assert.throws(()=>quota.remove(record.id));assert.equal(raw,preserved);
+const denied=PolicyStorage.create(()=>{throw new Error('SecurityError');});assert.throws(()=>denied.read());
+assert.equal(LockoutEngine.aggregate(RESEARCH_DATA.fast,5,30).normalBlocked,553);
+const bad=JSON.parse(preserved);bad.items[0].config.a.threshold=NaN;raw=JSON.stringify(bad);assert.throws(()=>store.read());
+raw=preserved;const untrusted=store.add('<img src=x onerror=alert(1)>',config,{a,b});assert.equal(store.read()[0].name,untrusted.name);
+console.log(JSON.stringify({v2:'PASS',samePolicy:'PASS',differentPolicies:'PASS',storageRoundTrip:'PASS',reopenAndDelete:'PASS',corruptDataPreserved:'PASS',quotaAndPermissionFailures:'PASS',limitAndInvalidConfig:'PASS'},null,2));
